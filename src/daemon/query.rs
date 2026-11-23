@@ -2417,23 +2417,27 @@ fn parse_appmsg_dom(text: &str) -> Option<String> {
     match atype.as_str() {
         "6" => Some(format_file_appmsg(appmsg, &title)),
         "19" => Some(format_record_appmsg(appmsg, &title)),
-        "51" => format_finder_feed_appmsg(appmsg),
+        "51" => Some(format_video_appmsg(appmsg, &title)),
         _ if placeholder => Some(format_placeholder_appmsg(appmsg, &atype)),
         _ => None,
     }
 }
 
-fn format_finder_feed_appmsg<'a, 'input>(appmsg: Node<'a, 'input>) -> Option<String> {
-    let feed = xml_child(appmsg, "finderFeed")?;
-    let title = ["desc", "name", "nickname"]
-        .iter()
-        .filter_map(|tag| xml_text(xml_child(feed, tag)))
-        .find(|value| !is_appmsg_placeholder(value))
+fn format_video_appmsg<'a, 'input>(appmsg: Node<'a, 'input>, fallback_title: &str) -> String {
+    let feed_title = xml_child(appmsg, "finderFeed")
+        .and_then(|feed| {
+            ["desc", "name", "nickname"]
+                .iter()
+                .filter_map(|tag| xml_text(xml_child(feed, tag)))
+                .find(|value| !is_appmsg_placeholder(value))
+        })
         .map(|value| collapse_text(&value, 120));
-    Some(match title {
-        Some(title) => format!("[视频号] {}", title),
-        None => "[视频号]".into(),
-    })
+    let title = feed_title.unwrap_or_else(|| fallback_title.to_string());
+    if title.is_empty() {
+        "[视频号]".into()
+    } else {
+        format!("[视频号] {}", title)
+    }
 }
 
 fn format_placeholder_appmsg<'a, 'input>(appmsg: Node<'a, 'input>, atype: &str) -> String {
@@ -3029,6 +3033,29 @@ mod appmsg_tests {
     #[test]
     fn appmsg_type_stays_51_for_finder_feed() {
         assert_eq!(appmsg_type_code(FINDER_FEED_APPMSG), Some(51));
+    }
+
+    #[test]
+    fn video_appmsg_without_finder_feed_keeps_real_title() {
+        let xml = concat!(
+            "<msg><appmsg>",
+            "<title>一条视频号标题</title>",
+            "<type>51</type>",
+            "</appmsg></msg>"
+        );
+        assert_eq!(parse_appmsg(xml).as_deref(), Some("[视频号] 一条视频号标题"));
+    }
+
+    #[test]
+    fn video_appmsg_uses_nickname_when_desc_missing() {
+        let xml = concat!(
+            "<msg><appmsg>",
+            "<title>当前版本不支持展示该内容，请升级至最新版本。</title>",
+            "<type>51</type>",
+            "<finderFeed><nickname>每天看一哈</nickname></finderFeed>",
+            "</appmsg></msg>"
+        );
+        assert_eq!(parse_appmsg(xml).as_deref(), Some("[视频号] 每天看一哈"));
     }
 
     #[test]
