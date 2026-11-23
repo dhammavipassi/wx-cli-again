@@ -51,7 +51,7 @@ pub trait ImageKeyProvider {
 pub fn default_provider() -> Option<Box<dyn ImageKeyProvider + Send + Sync>> {
     #[cfg(target_os = "macos")]
     {
-        return Some(Box::new(macos::MacosImageKeyProvider::from_current_config()));
+        Some(Box::new(macos::MacosImageKeyProvider::from_current_config()))
     }
     #[cfg(target_os = "windows")]
     {
@@ -221,7 +221,7 @@ pub(crate) fn verify_aes_key(aes_key: &[u8; 16], templates: &[[u8; 16]]) -> bool
             .all(|template| decrypt_template_block(aes_key, template).is_some())
 }
 
-pub(crate) fn ascii_alnum_candidates<'a>(buf: &'a [u8], len: usize) -> Vec<&'a [u8]> {
+pub(crate) fn ascii_alnum_candidates(buf: &[u8], len: usize) -> Vec<&[u8]> {
     let re = match len {
         16 => regex16(),
         32 => regex32(),

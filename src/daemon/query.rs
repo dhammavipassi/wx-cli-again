@@ -645,18 +645,7 @@ pub async fn q_timeline(
 
         sessions_queried += 1;
         match q_history(
-            db,
-            names,
-            uname,
-            per_chat,
-            0,
-            since,
-            until,
-            after_ts,
-            None,
-            msg_type,
-            false,
-            false,
+            db, names, uname, per_chat, 0, since, until, after_ts, None, msg_type, false, false,
         )
         .await
         {
@@ -677,10 +666,7 @@ pub async fn q_timeline(
                             obj.insert("chat".into(), json!(chat.clone()));
                             obj.insert("username".into(), json!(uname));
                             obj.insert("is_group".into(), json!(is_group));
-                            obj.insert(
-                                "chat_type".into(),
-                                json!(chat_type_of(uname, names)),
-                            );
+                            obj.insert("chat_type".into(), json!(chat_type_of(uname, names)));
                         }
                         all.push(row);
                     }
@@ -690,10 +676,7 @@ pub async fn q_timeline(
         }
 
         // 早停：堆内 top-needed 已满，且更冷会话 last_ts 进不了堆
-        let ts: Vec<i64> = all
-            .iter()
-            .filter_map(|m| m["timestamp"].as_i64())
-            .collect();
+        let ts: Vec<i64> = all.iter().filter_map(|m| m["timestamp"].as_i64()).collect();
         let top_min = timeline_top_needed_min_ts(&ts, needed);
         let remaining_max = sessions
             .iter()
@@ -1053,13 +1036,7 @@ pub async fn q_search(
                                 .cloned()
                                 .unwrap_or_else(|| uname.clone())
                         };
-                        result.push((
-                            rel_key2.clone(),
-                            path_label2.clone(),
-                            tname,
-                            display,
-                            uname,
-                        ));
+                        result.push((rel_key2.clone(), path_label2.clone(), tname, display, uname));
                     }
                     Ok::<_, anyhow::Error>(result)
                 })
@@ -1134,7 +1111,7 @@ pub async fn q_search(
                 match search_in_table(
                     &conn,
                     tname,
-                    &uname,
+                    uname,
                     is_group,
                     &names_map2,
                     group_nicknames,
@@ -1535,7 +1512,8 @@ fn query_messages_conn(
     let mut result = Vec::new();
     for (local_id, local_type, ts, real_sender_id, content_bytes, ct) in rows {
         let content = decompress_message(&content_bytes, ct);
-        let sender_username = sender_username(real_sender_id, &content, is_group, chat_username, &id2u);
+        let sender_username =
+            sender_username(real_sender_id, &content, is_group, chat_username, &id2u);
         let sender = sender_label(
             real_sender_id,
             &content,
@@ -1557,7 +1535,13 @@ fn query_messages_conn(
             "local_id": local_id,
         });
         attach_type_fields(&mut msg, local_type, &content);
-        add_sender_identity(&mut msg, is_group, &sender_username, names_map, group_nicknames);
+        add_sender_identity(
+            &mut msg,
+            is_group,
+            &sender_username,
+            names_map,
+            group_nicknames,
+        );
         if let Some(u) = url {
             msg["url"] = serde_json::Value::String(u);
         }
@@ -1643,7 +1627,8 @@ fn search_in_table(
     let mut result = Vec::new();
     for (local_id, local_type, ts, real_sender_id, content_bytes, ct) in rows {
         let content = decompress_message(&content_bytes, ct);
-        let sender_username = sender_username(real_sender_id, &content, is_group, chat_username, &id2u);
+        let sender_username =
+            sender_username(real_sender_id, &content, is_group, chat_username, &id2u);
         let sender = sender_label(
             real_sender_id,
             &content,
@@ -1669,7 +1654,13 @@ fn search_in_table(
             "type": fmt_type(local_type),
         });
         attach_type_fields(&mut msg, local_type, &content);
-        add_sender_identity(&mut msg, is_group, &sender_username, names_map, group_nicknames);
+        add_sender_identity(
+            &mut msg,
+            is_group,
+            &sender_username,
+            names_map,
+            group_nicknames,
+        );
         if let Some(u) = url {
             msg["url"] = serde_json::Value::String(u);
         }
@@ -1855,7 +1846,7 @@ fn decode_proto_varint(raw: &[u8], offset: usize) -> Option<(u64, usize)> {
     None
 }
 
-fn proto_len_fields<'a>(raw: &'a [u8]) -> Vec<(u64, &'a [u8])> {
+fn proto_len_fields(raw: &[u8]) -> Vec<(u64, &[u8])> {
     let mut fields = Vec::new();
     let mut idx = 0usize;
     while idx < raw.len() {
@@ -2153,7 +2144,7 @@ fn sender_username(
         return sender_uname;
     }
     if content.contains(":\n") {
-        return content.splitn(2, ":\n").next().unwrap_or("").to_string();
+        return content.split(":\n").next().unwrap_or("").to_string();
     }
     String::new()
 }
@@ -2170,11 +2161,13 @@ fn add_sender_identity(
     }
     row["sender_username"] = Value::String(username.to_string());
     row["sender_contact_display"] = Value::String(
-        names.get(username).cloned().unwrap_or_else(|| username.to_string())
+        names
+            .get(username)
+            .cloned()
+            .unwrap_or_else(|| username.to_string()),
     );
-    row["sender_group_nickname"] = Value::String(
-        group_nicknames.get(username).cloned().unwrap_or_default()
-    );
+    row["sender_group_nickname"] =
+        Value::String(group_nicknames.get(username).cloned().unwrap_or_default());
 }
 
 fn sender_label(
@@ -2192,7 +2185,7 @@ fn sender_label(
             return sender_display(&sender_uname, "", names, group_nicknames);
         }
         if content.contains(":\n") {
-            let raw = content.splitn(2, ":\n").next().unwrap_or("");
+            let raw = content.split(":\n").next().unwrap_or("");
             return sender_display(raw, "", names, group_nicknames);
         }
         return String::new();
@@ -2239,7 +2232,7 @@ fn decompress_or_str(data: &[u8]) -> String {
 
 fn strip_group_prefix(s: &str) -> String {
     if s.contains(":\n") {
-        s.splitn(2, ":\n").nth(1).unwrap_or(s).to_string()
+        s.split_once(":\n").map(|x| x.1).unwrap_or(s).to_string()
     } else {
         s.to_string()
     }
@@ -2325,7 +2318,7 @@ fn fmt_content(local_id: i64, local_type: i64, content: &str, is_group: bool) ->
     }
 
     let text = if is_group && content.contains(":\n") {
-        content.splitn(2, ":\n").nth(1).unwrap_or(content)
+        content.split_once(":\n").map(|x| x.1).unwrap_or(content)
     } else {
         content
     };
@@ -2407,8 +2400,8 @@ fn parse_appmsg_dom(text: &str) -> Option<String> {
     let appmsg = doc.descendants().find(|node| node.has_tag_name("appmsg"))?;
     let raw_title = xml_text(xml_child(appmsg, "title")).unwrap_or_default();
     let atype = xml_text(xml_child(appmsg, "type")).unwrap_or_default();
-    let placeholder = is_appmsg_placeholder(&raw_title)
-        || (raw_title.is_empty() && is_appmsg_placeholder(text));
+    let placeholder =
+        is_appmsg_placeholder(&raw_title) || (raw_title.is_empty() && is_appmsg_placeholder(text));
     let title = if placeholder {
         appmsg_semantic_title(appmsg).unwrap_or_default()
     } else {
@@ -2474,7 +2467,11 @@ fn parse_appmsg_legacy(text: &str) -> Option<String> {
     let raw_title = extract_xml_text(text, "title").unwrap_or_default();
     let atype = extract_xml_text(text, "type").unwrap_or_default();
     let placeholder = is_appmsg_placeholder(&raw_title) || is_appmsg_placeholder(text);
-    let title = if placeholder { String::new() } else { raw_title };
+    let title = if placeholder {
+        String::new()
+    } else {
+        raw_title
+    };
     match atype.as_str() {
         "6" => Some(if !title.is_empty() {
             format!("[文件] {}", title)
@@ -3043,7 +3040,10 @@ mod appmsg_tests {
             "<type>51</type>",
             "</appmsg></msg>"
         );
-        assert_eq!(parse_appmsg(xml).as_deref(), Some("[视频号] 一条视频号标题"));
+        assert_eq!(
+            parse_appmsg(xml).as_deref(),
+            Some("[视频号] 一条视频号标题")
+        );
     }
 
     #[test]
@@ -3062,9 +3062,15 @@ mod appmsg_tests {
     fn fmt_content_and_url_skip_upgrade_placeholder_for_finder_feed() {
         let raw = format!("wxid_sender:\n{}", FINDER_FEED_APPMSG);
         let content = fmt_content(22584, 49, &raw, true);
-        assert!(content.starts_with("[视频号] 2分钟"), "unexpected: {content}");
+        assert!(
+            content.starts_with("[视频号] 2分钟"),
+            "unexpected: {content}"
+        );
         let url = appmsg_url_for_message(49, &raw).expect("payload url");
-        assert!(url.starts_with("http://wxapp.tc.qq.com/"), "unexpected: {url}");
+        assert!(
+            url.starts_with("http://wxapp.tc.qq.com/"),
+            "unexpected: {url}"
+        );
     }
 
     #[test]
@@ -3076,7 +3082,10 @@ mod appmsg_tests {
             "<type>33</type>",
             "</appmsg></msg>"
         );
-        assert_eq!(parse_appmsg(xml).as_deref(), Some("[小程序] 某个小程序标题"));
+        assert_eq!(
+            parse_appmsg(xml).as_deref(),
+            Some("[小程序] 某个小程序标题")
+        );
     }
 
     #[test]
@@ -3120,7 +3129,10 @@ mod appmsg_tests {
             "<finderLive><nickname>GEO大会</nickname></finderLive>",
             "</appmsg></msg>"
         );
-        assert_eq!(parse_appmsg(xml).as_deref(), Some("[卡片] 第二届GEO大会第二天上午场"));
+        assert_eq!(
+            parse_appmsg(xml).as_deref(),
+            Some("[卡片] 第二届GEO大会第二天上午场")
+        );
         assert_eq!(appmsg_url_for_message(49, xml), None);
     }
 
@@ -3133,7 +3145,9 @@ mod appmsg_tests {
         ] {
             assert!(is_appmsg_placeholder(title), "missed: {title}");
         }
-        assert!(!is_appmsg_placeholder("2分钟，你将沉浸式体验5个心理学实验。"));
+        assert!(!is_appmsg_placeholder(
+            "2分钟，你将沉浸式体验5个心理学实验。"
+        ));
     }
 
     #[test]
@@ -3222,14 +3236,7 @@ mod appmsg_tests {
             .expect("create message table");
             conn.execute(
                 "INSERT INTO Msg_test VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    1_i64,
-                    1_i64,
-                    1775146911_i64,
-                    42_i64,
-                    "hello",
-                    0_i64
-                ],
+                rusqlite::params![1_i64, 1_i64, 1775146911_i64, 42_i64, "hello", 0_i64],
             )
             .expect("insert text message");
         }
@@ -3256,7 +3263,10 @@ mod appmsg_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["sender"].as_str(), Some("同名"));
         assert_eq!(rows[0]["sender_username"].as_str(), Some("wxid_alice"));
-        assert_eq!(rows[0]["sender_contact_display"].as_str(), Some("Alice Contact"));
+        assert_eq!(
+            rows[0]["sender_contact_display"].as_str(),
+            Some("Alice Contact")
+        );
         assert_eq!(rows[0]["sender_group_nickname"].as_str(), Some("同名"));
     }
 
@@ -3313,7 +3323,10 @@ mod appmsg_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["sender"].as_str(), Some("同名"));
         assert_eq!(rows[0]["sender_username"].as_str(), Some("wxid_alice"));
-        assert_eq!(rows[0]["sender_contact_display"].as_str(), Some("Alice Contact"));
+        assert_eq!(
+            rows[0]["sender_contact_display"].as_str(),
+            Some("Alice Contact")
+        );
         assert_eq!(rows[0]["sender_group_nickname"].as_str(), Some("同名"));
     }
 
@@ -3343,7 +3356,10 @@ mod appmsg_tests {
         add_sender_identity(&mut alice_row, true, "wxid_alice", &names, &group_nicknames);
         assert_eq!(alice_row["sender"].as_str(), Some("同名"));
         assert_eq!(alice_row["sender_username"].as_str(), Some("wxid_alice"));
-        assert_eq!(alice_row["sender_contact_display"].as_str(), Some("Alice Contact"));
+        assert_eq!(
+            alice_row["sender_contact_display"].as_str(),
+            Some("Alice Contact")
+        );
         assert_eq!(alice_row["sender_group_nickname"].as_str(), Some("同名"));
 
         let mut bob_row = json!({
@@ -3365,7 +3381,13 @@ mod appmsg_tests {
 
         // 非群 chat 不该追加 identity 字段（行为对齐 history/search/new-messages）
         let mut private_row = json!({"attachment_id": "ghi", "sender": ""});
-        add_sender_identity(&mut private_row, false, "wxid_alice", &names, &group_nicknames);
+        add_sender_identity(
+            &mut private_row,
+            false,
+            "wxid_alice",
+            &names,
+            &group_nicknames,
+        );
         assert!(private_row.get("sender_username").is_none());
         assert!(private_row.get("sender_contact_display").is_none());
         assert!(private_row.get("sender_group_nickname").is_none());
@@ -4028,7 +4050,8 @@ pub async fn q_new_messages(
                 let mut result = Vec::new();
                 for (local_id, local_type, ts, real_sender_id, content_bytes, ct) in rows {
                     let content = decompress_message(&content_bytes, ct);
-                    let sender_username = sender_username(real_sender_id, &content, is_group, &uname2, &id2u);
+                    let sender_username =
+                        sender_username(real_sender_id, &content, is_group, &uname2, &id2u);
                     let sender = sender_label(
                         real_sender_id,
                         &content,
@@ -4052,7 +4075,13 @@ pub async fn q_new_messages(
                         "type": fmt_type(local_type),
                     });
                     attach_type_fields(&mut msg, local_type, &content);
-                    add_sender_identity(&mut msg, is_group, &sender_username, &names_map, &group_nicknames2);
+                    add_sender_identity(
+                        &mut msg,
+                        is_group,
+                        &sender_username,
+                        &names_map,
+                        &group_nicknames2,
+                    );
                     if let Some(u) = url {
                         msg["url"] = serde_json::Value::String(u);
                     }
@@ -4523,8 +4552,7 @@ pub async fn q_sns_notifications(
             return Ok::<_, anyhow::Error>(HashMap::new());
         }
         let conn = Connection::open(&path3)?;
-        let placeholders = std::iter::repeat("?")
-            .take(feed_ids_clone.len())
+        let placeholders = std::iter::repeat_n("?", feed_ids_clone.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
@@ -5027,9 +5055,8 @@ fn extract_cdata(xml: &str, tag: &str) -> Option<String> {
     let start = xml.find(&open)? + open.len();
     let end = xml[start..].find(&close)?;
     let inner = xml[start..start + end].trim();
-    if inner.starts_with("<![CDATA[") {
+    if let Some(body) = inner.strip_prefix("<![CDATA[") {
         // inner = `<![CDATA[content]]>` → strip 9-char `<![CDATA[` prefix + 3-char `]]>` suffix
-        let body = &inner[9..];
         // Strip `]]>` (normal) or `]]` (edge case)
         let cdata_end = b"]]>";
         let cdata_end2 = b"]]";
@@ -5436,18 +5463,21 @@ pub async fn q_attachments(
                                     &names_map,
                                     &group_nicknames2,
                                 ),
-                                sender_username(
-                                    real_sender_id,
-                                    &content,
-                                    true,
-                                    &uname,
-                                    &id2u,
-                                ),
+                                sender_username(real_sender_id, &content, true, &uname, &id2u),
                             )
                         } else {
                             (String::new(), String::new())
                         };
-                        Ok((local_id, lo32, ts, real_sender_id, sender, sender_uname, ts, db_idx2))
+                        Ok((
+                            local_id,
+                            lo32,
+                            ts,
+                            real_sender_id,
+                            sender,
+                            sender_uname,
+                            ts,
+                            db_idx2,
+                        ))
                     })?
                     .filter_map(|r| r.ok())
                     .collect();
@@ -5492,7 +5522,13 @@ pub async fn q_attachments(
         if is_group && !sender.is_empty() {
             row["sender"] = Value::String(sender);
         }
-        add_sender_identity(&mut row, is_group, &sender_uname, &names.map, &group_nicknames);
+        add_sender_identity(
+            &mut row,
+            is_group,
+            &sender_uname,
+            &names.map,
+            &group_nicknames,
+        );
         results.push(row);
     }
     let unknown_shards = current_unknown_shards(db, names);
@@ -5880,12 +5916,18 @@ mod group_nickname_tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0]["sender"].as_str(), Some("同名"));
         assert_eq!(top[0]["sender_username"].as_str(), Some("wxid_alice"));
-        assert_eq!(top[0]["sender_contact_display"].as_str(), Some("Alice Contact"));
+        assert_eq!(
+            top[0]["sender_contact_display"].as_str(),
+            Some("Alice Contact")
+        );
         assert_eq!(top[0]["sender_group_nickname"].as_str(), Some("同名"));
         assert_eq!(top[0]["count"].as_i64(), Some(7));
         assert_eq!(top[1]["sender"].as_str(), Some("同名"));
         assert_eq!(top[1]["sender_username"].as_str(), Some("wxid_bob"));
-        assert_eq!(top[1]["sender_contact_display"].as_str(), Some("Bob Contact"));
+        assert_eq!(
+            top[1]["sender_contact_display"].as_str(),
+            Some("Bob Contact")
+        );
         assert_eq!(top[1]["sender_group_nickname"].as_str(), Some("同名"));
         assert_eq!(top[1]["count"].as_i64(), Some(3));
     }

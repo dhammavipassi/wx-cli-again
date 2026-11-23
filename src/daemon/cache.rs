@@ -183,8 +183,7 @@ impl DbCache {
     pub fn source_path(&self, rel_key: &str) -> PathBuf {
         self.db_dir.join(
             rel_key
-                .replace('\\', std::path::MAIN_SEPARATOR_STR)
-                .replace('/', std::path::MAIN_SEPARATOR_STR),
+                .replace(['\\', '/'], std::path::MAIN_SEPARATOR_STR),
         )
     }
 
@@ -377,8 +376,7 @@ impl DbCache {
             }
             let db_path = self.db_dir.join(
                 rel_key
-                    .replace('\\', std::path::MAIN_SEPARATOR_STR)
-                    .replace('/', std::path::MAIN_SEPARATOR_STR),
+                    .replace(['\\', '/'], std::path::MAIN_SEPARATOR_STR),
             );
             let wal_path = wal_path_for(&db_path);
 
@@ -461,8 +459,7 @@ impl DbCache {
 
         let db_path = self.db_dir.join(
             rel_key
-                .replace('\\', std::path::MAIN_SEPARATOR_STR)
-                .replace('/', std::path::MAIN_SEPARATOR_STR),
+                .replace(['\\', '/'], std::path::MAIN_SEPARATOR_STR),
         );
         if !db_path.exists() {
             return Ok(None);

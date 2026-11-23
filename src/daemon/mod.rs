@@ -89,7 +89,7 @@ async fn async_run() -> Result<()> {
 
     // 预热：加载联系人 + 解密 session.db
     eprintln!("[daemon] 预热...");
-    let names_raw = query::load_names(&*db).await.unwrap_or_else(|e| {
+    let names_raw = query::load_names(&db).await.unwrap_or_else(|e| {
         eprintln!("[daemon] 加载联系人失败: {}", e);
         query::Names {
             map: HashMap::new(),

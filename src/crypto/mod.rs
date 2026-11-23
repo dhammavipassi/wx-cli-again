@@ -124,7 +124,7 @@ fn has_valid_sqlite_page1_header(page: &[u8]) -> bool {
 
 /// AES-256-CBC 解密（不去除 padding，SQLCipher 不使用 PKCS#7 padding）
 fn aes_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>> {
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(16) {
         bail!("密文长度不是 AES 块大小的倍数: {}", data.len());
     }
     // 将 &[u8] 复制为 Block 数组，避免 unsafe from_raw_parts_mut
@@ -148,7 +148,7 @@ pub fn full_decrypt(db_path: &Path, out_path: &Path, enc_key: &[u8; 32]) -> Resu
     }
 
     let mut output = std::fs::File::create(out_path)?;
-    let total_pages = (file_size + PAGE_SZ - 1) / PAGE_SZ;
+    let total_pages = file_size.div_ceil(PAGE_SZ);
     let mut page_buf = vec![0u8; PAGE_SZ];
 
     for pgno in 1..=total_pages {
