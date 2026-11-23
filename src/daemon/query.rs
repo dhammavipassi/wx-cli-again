@@ -2389,7 +2389,7 @@ const APPMSG_PLACEHOLDER_MARKERS: &[&str] = &[
     "does not support this content",
 ];
 
-const APPMSG_UPGRADE_URL_MARKER: &str = "support.weixin.qq.com/security/readtemplate";
+const APPMSG_UPGRADE_URL_HOST: &str = "support.weixin.qq.com";
 
 fn is_appmsg_placeholder(text: &str) -> bool {
     let folded = text.to_lowercase();
@@ -2399,7 +2399,7 @@ fn is_appmsg_placeholder(text: &str) -> bool {
 }
 
 fn is_appmsg_upgrade_url(url: &str) -> bool {
-    url.contains(APPMSG_UPGRADE_URL_MARKER)
+    url.contains(APPMSG_UPGRADE_URL_HOST)
 }
 
 fn parse_appmsg_dom(text: &str) -> Option<String> {
@@ -3106,6 +3106,21 @@ mod appmsg_tests {
         let content = parse_appmsg(xml).expect("legacy parse");
         assert_eq!(content, "[视频号]");
         assert!(!content.contains("不支持") && !content.contains("升级至"));
+        assert_eq!(appmsg_url_for_message(49, xml), None);
+    }
+
+    #[test]
+    fn live_card_with_upgrade_url_yields_no_payload_url() {
+        let xml = concat!(
+            "<msg><appmsg>",
+            "<title>当前版本不支持展示该内容，请升级至最新版本。</title>",
+            "<des>第二届GEO大会第二天上午场</des>",
+            "<type>63</type>",
+            "<url>https://support.weixin.qq.com/update/</url>",
+            "<finderLive><nickname>GEO大会</nickname></finderLive>",
+            "</appmsg></msg>"
+        );
+        assert_eq!(parse_appmsg(xml).as_deref(), Some("[卡片] 第二届GEO大会第二天上午场"));
         assert_eq!(appmsg_url_for_message(49, xml), None);
     }
 
