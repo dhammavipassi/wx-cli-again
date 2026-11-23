@@ -91,14 +91,19 @@ pub fn load_config() -> Result<Config> {
 }
 
 fn find_config_file() -> Result<PathBuf> {
+    if let Some(path) = env_config_path(std::env::var_os("WX_CONFIG")) {
+        return Ok(path);
+    }
+
     let cwd_dir = std::env::current_dir().ok();
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(PathBuf::from));
-    let cli_home = cli_home_dir();
-    let home_dir = (cli_home != PathBuf::from("/tmp")).then_some(cli_home.as_path());
+    let cli = cli_dir();
+    let cli_dir_candidate = (cli != Path::new("/tmp/.wx-cli")).then_some(cli.as_path());
 
-    if let Some(path) = find_existing_config_path(cwd_dir.as_deref(), exe_dir.as_deref(), home_dir)
+    if let Some(path) =
+        find_existing_config_path(cwd_dir.as_deref(), exe_dir.as_deref(), cli_dir_candidate)
     {
         return Ok(path);
     }
@@ -106,19 +111,25 @@ fn find_config_file() -> Result<PathBuf> {
     Ok(default_config_path(
         cwd_dir.as_deref(),
         exe_dir.as_deref(),
-        home_dir,
+        cli_dir_candidate,
     ))
+}
+
+fn env_config_path(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value
+        .filter(|raw| !raw.is_empty())
+        .map(PathBuf::from)
 }
 
 fn find_existing_config_path(
     cwd_dir: Option<&Path>,
     exe_dir: Option<&Path>,
-    home_dir: Option<&Path>,
+    cli_dir: Option<&Path>,
 ) -> Option<PathBuf> {
     let candidates = [
         cwd_dir.map(config_path_in_dir),
         exe_dir.map(config_path_in_dir),
-        home_dir.map(home_config_path),
+        cli_dir.map(config_path_in_dir),
     ];
     candidates.into_iter().flatten().find(|path| path.exists())
 }
@@ -126,12 +137,12 @@ fn find_existing_config_path(
 fn default_config_path(
     cwd_dir: Option<&Path>,
     exe_dir: Option<&Path>,
-    home_dir: Option<&Path>,
+    cli_dir: Option<&Path>,
 ) -> PathBuf {
     cwd_dir
         .map(config_path_in_dir)
         .or_else(|| exe_dir.map(config_path_in_dir))
-        .or_else(|| home_dir.map(home_config_path))
+        .or_else(|| cli_dir.map(config_path_in_dir))
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 
@@ -139,12 +150,17 @@ fn config_path_in_dir(dir: &Path) -> PathBuf {
     dir.join("config.json")
 }
 
-fn home_config_path(home_dir: &Path) -> PathBuf {
-    home_dir.join(".wx-cli").join("config.json")
+pub fn cli_dir() -> PathBuf {
+    resolve_cli_dir(
+        std::env::var_os("WX_CLI_DIR"),
+        cli_home_dir().join(".wx-cli"),
+    )
 }
 
-pub fn cli_dir() -> PathBuf {
-    cli_home_dir().join(".wx-cli")
+fn resolve_cli_dir(env: Option<std::ffi::OsString>, fallback: PathBuf) -> PathBuf {
+    env.filter(|raw| !raw.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(fallback)
 }
 
 fn cli_home_dir() -> PathBuf {
@@ -437,8 +453,8 @@ fn detect_db_dir_impl() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        config_path_in_dir, default_config_path, find_existing_config_path, home_config_path,
-        resolve_cli_home,
+        config_path_in_dir, default_config_path, env_config_path, find_existing_config_path,
+        resolve_cli_dir, resolve_cli_home,
     };
     #[cfg(target_os = "windows")]
     use super::{known_documents_dir, resolve_windows_data_root};
@@ -474,30 +490,54 @@ mod tests {
     }
 
     #[test]
-    fn config_path_prefers_cwd_over_exe_and_home() {
+    fn config_path_prefers_cwd_over_exe_and_cli_dir() {
         let cwd = temp_dir("cwd");
         let exe = temp_dir("exe");
-        let home = temp_dir("home");
+        let cli = temp_dir("cli");
         fs::write(config_path_in_dir(&cwd), "{}").unwrap();
         fs::write(config_path_in_dir(&exe), "{}").unwrap();
-        fs::create_dir_all(home.join(".wx-cli")).unwrap();
-        fs::write(home_config_path(&home), "{}").unwrap();
+        fs::write(config_path_in_dir(&cli), "{}").unwrap();
 
-        let path = find_existing_config_path(Some(&cwd), Some(&exe), Some(&home)).unwrap();
+        let path = find_existing_config_path(Some(&cwd), Some(&exe), Some(&cli)).unwrap();
         assert_eq!(path, config_path_in_dir(&cwd));
 
         fs::remove_dir_all(cwd).unwrap();
         fs::remove_dir_all(exe).unwrap();
-        fs::remove_dir_all(home).unwrap();
+        fs::remove_dir_all(cli).unwrap();
+    }
+
+    #[test]
+    fn env_config_path_accepts_absolute_file_and_ignores_empty() {
+        assert_eq!(
+            env_config_path(Some("/Users/alice/.wx-cli-account2/config.json".into())),
+            Some(PathBuf::from("/Users/alice/.wx-cli-account2/config.json"))
+        );
+        assert_eq!(env_config_path(Some("".into())), None);
+        assert_eq!(env_config_path(None), None);
+    }
+
+    #[test]
+    fn resolve_cli_dir_prefers_env_over_fallback() {
+        assert_eq!(
+            resolve_cli_dir(
+                Some("/Users/alice/.wx-cli-account2".into()),
+                PathBuf::from("/Users/alice/.wx-cli")
+            ),
+            PathBuf::from("/Users/alice/.wx-cli-account2")
+        );
+        assert_eq!(
+            resolve_cli_dir(None, PathBuf::from("/Users/alice/.wx-cli")),
+            PathBuf::from("/Users/alice/.wx-cli")
+        );
     }
 
     #[test]
     fn default_config_path_matches_init_write_order() {
         let cwd = PathBuf::from("/tmp/cwd");
         let exe = PathBuf::from("/tmp/exe");
-        let home = PathBuf::from("/tmp/home");
+        let cli = PathBuf::from("/tmp/cli");
 
-        let path = default_config_path(Some(&cwd), Some(&exe), Some(&home));
+        let path = default_config_path(Some(&cwd), Some(&exe), Some(&cli));
         assert_eq!(path, cwd.join("config.json"));
     }
 
