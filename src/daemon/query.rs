@@ -2379,21 +2379,98 @@ fn parse_appmsg(text: &str) -> Option<String> {
     parse_appmsg_legacy(text)
 }
 
+/// 微信客户端把「本端无法渲染」的卡片写成升级占位，真实负载仍在同一 XML 的下层节点。
+const APPMSG_PLACEHOLDER_MARKERS: &[&str] = &[
+    "当前版本不支持展示该内容",
+    "当前微信版本不支持展示该内容",
+    "暂不支持查看",
+    "不支持查看该内容",
+    "请升级至最新版本",
+    "does not support this content",
+];
+
+const APPMSG_UPGRADE_URL_MARKER: &str = "support.weixin.qq.com/security/readtemplate";
+
+fn is_appmsg_placeholder(text: &str) -> bool {
+    let folded = text.to_lowercase();
+    APPMSG_PLACEHOLDER_MARKERS
+        .iter()
+        .any(|marker| folded.contains(marker))
+}
+
+fn is_appmsg_upgrade_url(url: &str) -> bool {
+    url.contains(APPMSG_UPGRADE_URL_MARKER)
+}
+
 fn parse_appmsg_dom(text: &str) -> Option<String> {
     let doc = Document::parse(text).ok()?;
     let appmsg = doc.descendants().find(|node| node.has_tag_name("appmsg"))?;
-    let title = xml_text(xml_child(appmsg, "title")).unwrap_or_default();
+    let raw_title = xml_text(xml_child(appmsg, "title")).unwrap_or_default();
     let atype = xml_text(xml_child(appmsg, "type")).unwrap_or_default();
+    let placeholder = is_appmsg_placeholder(&raw_title)
+        || (raw_title.is_empty() && is_appmsg_placeholder(text));
+    let title = if placeholder {
+        appmsg_semantic_title(appmsg).unwrap_or_default()
+    } else {
+        raw_title
+    };
     match atype.as_str() {
         "6" => Some(format_file_appmsg(appmsg, &title)),
         "19" => Some(format_record_appmsg(appmsg, &title)),
+        "51" => format_finder_feed_appmsg(appmsg),
+        _ if placeholder => Some(format_placeholder_appmsg(appmsg, &atype)),
         _ => None,
     }
 }
 
+fn format_finder_feed_appmsg<'a, 'input>(appmsg: Node<'a, 'input>) -> Option<String> {
+    let feed = xml_child(appmsg, "finderFeed")?;
+    let title = ["desc", "name", "nickname"]
+        .iter()
+        .filter_map(|tag| xml_text(xml_child(feed, tag)))
+        .find(|value| !is_appmsg_placeholder(value))
+        .map(|value| collapse_text(&value, 120));
+    Some(match title {
+        Some(title) => format!("[视频号] {}", title),
+        None => "[视频号]".into(),
+    })
+}
+
+fn format_placeholder_appmsg<'a, 'input>(appmsg: Node<'a, 'input>, atype: &str) -> String {
+    let label = match atype {
+        "33" | "36" | "44" => "[小程序]",
+        _ => "[卡片]",
+    };
+    match appmsg_semantic_title(appmsg) {
+        Some(title) => format!("{} {}", label, collapse_text(&title, 120)),
+        None => label.into(),
+    }
+}
+
+fn appmsg_semantic_title<'a, 'input>(appmsg: Node<'a, 'input>) -> Option<String> {
+    let direct = ["des", "sourcename", "sourcedisplayname"]
+        .iter()
+        .filter_map(|tag| xml_text(xml_child(appmsg, tag)))
+        .find(|value| !is_appmsg_placeholder(value));
+
+    direct
+        .or_else(|| {
+            appmsg
+                .descendants()
+                .filter(|node| node.has_tag_name("title") || node.has_tag_name("desc"))
+                .filter(|node| node.parent() != Some(appmsg) || !node.has_tag_name("title"))
+                .filter_map(|node| node.text().map(str::trim).filter(|text| !text.is_empty()))
+                .find(|value| !is_appmsg_placeholder(value))
+                .map(str::to_string)
+        })
+        .filter(|value| !value.is_empty())
+}
+
 fn parse_appmsg_legacy(text: &str) -> Option<String> {
-    let title = extract_xml_text(text, "title")?;
+    let raw_title = extract_xml_text(text, "title").unwrap_or_default();
     let atype = extract_xml_text(text, "type").unwrap_or_default();
+    let placeholder = is_appmsg_placeholder(&raw_title) || is_appmsg_placeholder(text);
+    let title = if placeholder { String::new() } else { raw_title };
     match atype.as_str() {
         "6" => Some(if !title.is_empty() {
             format!("[文件] {}", title)
@@ -2422,6 +2499,12 @@ fn parse_appmsg_legacy(text: &str) -> Option<String> {
         } else {
             "[小程序]".into()
         }),
+        "51" => Some(if !title.is_empty() {
+            format!("[视频号] {}", title)
+        } else {
+            "[视频号]".into()
+        }),
+        _ if placeholder => Some("[卡片]".into()),
         _ => Some(if !title.is_empty() {
             format!("[链接] {}", title)
         } else {
@@ -2664,13 +2747,54 @@ fn extract_appmsg_url(text: &str) -> Option<String> {
     if extract_xml_text(&xml, "type").as_deref() == Some("57") {
         return None;
     }
-    let url = extract_xml_text(&xml, "url")
-        .or_else(|| extract_xml_text(&xml, "url1"))
-        .map(|s| unescape_html(strip_xml_cdata(&s)))?;
-    if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+
+    let Ok(doc) = Document::parse(&xml) else {
+        return ["url", "url1"]
+            .iter()
+            .find_map(|tag| extract_xml_text(&xml, tag))
+            .and_then(|raw| sanitize_appmsg_url(&raw));
+    };
+    let appmsg = doc.descendants().find(|node| node.has_tag_name("appmsg"))?;
+    if xml_text(xml_child(appmsg, "type")).as_deref() == Some("51") {
+        return finder_feed_url(appmsg).or_else(|| nested_appmsg_url(appmsg));
+    }
+
+    let direct = ["url", "url1"]
+        .iter()
+        .find_map(|tag| xml_text(xml_child(appmsg, tag)))
+        .and_then(|raw| sanitize_appmsg_url(&raw));
+    direct.or_else(|| nested_appmsg_url(appmsg))
+}
+
+fn sanitize_appmsg_url(raw: &str) -> Option<String> {
+    let url = unescape_html(strip_xml_cdata(raw)).trim().to_string();
+    let http = url.starts_with("http://") || url.starts_with("https://");
+    if !http || is_appmsg_upgrade_url(&url) {
         return None;
     }
     Some(url)
+}
+
+fn finder_feed_url<'a, 'input>(appmsg: Node<'a, 'input>) -> Option<String> {
+    let feed = xml_child(appmsg, "finderFeed")?;
+    feed.descendants()
+        .filter(|node| node.has_tag_name("media"))
+        .find_map(|media| first_child_text(media, &["url", "videoUrl"]))
+        .and_then(|raw| sanitize_appmsg_url(&raw))
+        .or_else(|| {
+            feed.descendants()
+                .filter(|node| node.has_tag_name("url") || node.has_tag_name("videoUrl"))
+                .filter_map(|node| node.text().map(str::trim))
+                .find_map(sanitize_appmsg_url)
+        })
+}
+
+fn nested_appmsg_url<'a, 'input>(appmsg: Node<'a, 'input>) -> Option<String> {
+    appmsg
+        .descendants()
+        .filter(|node| node.has_tag_name("url") || node.has_tag_name("videoUrl"))
+        .filter_map(|node| node.text().map(str::trim))
+        .find_map(sanitize_appmsg_url)
 }
 
 fn extract_xml_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
@@ -2857,6 +2981,117 @@ mod appmsg_tests {
             parse_appmsg(xml).as_deref(),
             Some("[引用] 我也没有用ai啊\n  \u{21b3} 不再熬夜: 昨天用 claude 爬小红书数据来着")
         );
+    }
+
+    const FINDER_FEED_APPMSG: &str = r#"
+<msg>
+  <appmsg appid="" sdkver="0">
+    <title>当前版本不支持展示该内容，请升级至最新版本。</title>
+    <des />
+    <type>51</type>
+    <url>https://support.weixin.qq.com/security/readtemplate?t=w_security_center_website/upgrade</url>
+    <finderFeed>
+      <objectId>14294776306637408532</objectId>
+      <nickname>每天看一哈</nickname>
+      <desc>2分钟，你将沉浸式体验5个心理学实验。（视频来源：@每天看一哈 )</desc>
+      <mediaCount>1</mediaCount>
+      <mediaList>
+        <media>
+          <url>http://wxapp.tc.qq.com/251/20302/stodownload?encfilekey=abc&amp;token=xyz</url>
+          <videoUrl>http://wxapp.tc.qq.com/251/20302/stodownload?encfilekey=abc</videoUrl>
+          <mediaType>4</mediaType>
+        </media>
+      </mediaList>
+    </finderFeed>
+  </appmsg>
+</msg>
+        "#;
+
+    #[test]
+    fn parse_finder_feed_appmsg_uses_desc_instead_of_upgrade_placeholder() {
+        let content = parse_appmsg(FINDER_FEED_APPMSG).expect("parse finder feed appmsg");
+        assert!(
+            content.starts_with("[视频号] 2分钟，你将沉浸式体验5个心理学实验。"),
+            "unexpected content: {content}"
+        );
+        assert!(!content.contains("不支持"), "placeholder leaked: {content}");
+        assert!(!content.contains("升级至"), "placeholder leaked: {content}");
+    }
+
+    #[test]
+    fn extract_appmsg_url_reads_finder_media_url() {
+        assert_eq!(
+            appmsg_url_for_message(49, FINDER_FEED_APPMSG).as_deref(),
+            Some("http://wxapp.tc.qq.com/251/20302/stodownload?encfilekey=abc&token=xyz")
+        );
+    }
+
+    #[test]
+    fn appmsg_type_stays_51_for_finder_feed() {
+        assert_eq!(appmsg_type_code(FINDER_FEED_APPMSG), Some(51));
+    }
+
+    #[test]
+    fn fmt_content_and_url_skip_upgrade_placeholder_for_finder_feed() {
+        let raw = format!("wxid_sender:\n{}", FINDER_FEED_APPMSG);
+        let content = fmt_content(22584, 49, &raw, true);
+        assert!(content.starts_with("[视频号] 2分钟"), "unexpected: {content}");
+        let url = appmsg_url_for_message(49, &raw).expect("payload url");
+        assert!(url.starts_with("http://wxapp.tc.qq.com/"), "unexpected: {url}");
+    }
+
+    #[test]
+    fn placeholder_card_uses_semantic_des_title() {
+        let xml = concat!(
+            "<msg><appmsg>",
+            "<title>当前版本不支持展示该内容，请升级至最新版本。</title>",
+            "<des>某个小程序标题</des>",
+            "<type>33</type>",
+            "</appmsg></msg>"
+        );
+        assert_eq!(parse_appmsg(xml).as_deref(), Some("[小程序] 某个小程序标题"));
+    }
+
+    #[test]
+    fn placeholder_card_without_semantic_title_falls_back_to_bare_label() {
+        let xml = concat!(
+            "<msg><appmsg>",
+            "<title>当前版本不支持展示该内容，请升级至最新版本。</title>",
+            "<des>当前版本暂不支持查看礼物，请升级至新版本</des>",
+            "<type>124</type>",
+            "<url>https://support.weixin.qq.com/security/readtemplate?t=w_security_center_website/upgrade</url>",
+            "</appmsg></msg>"
+        );
+        let content = parse_appmsg(xml).expect("parse placeholder card");
+        assert_eq!(content, "[卡片]");
+        assert_eq!(appmsg_url_for_message(49, xml), None);
+    }
+
+    #[test]
+    fn placeholder_legacy_path_never_leaks_upgrade_text() {
+        let xml = concat!(
+            "<msg><appmsg>",
+            "<type>51</type>",
+            "<title>当前版本不支持展示该内容，请升级至最新版本。</title>",
+            "<url>https://support.weixin.qq.com/security/readtemplate?t=w_security_center_website/upgrade</url>",
+            "</appmsg>"
+        );
+        let content = parse_appmsg(xml).expect("legacy parse");
+        assert_eq!(content, "[视频号]");
+        assert!(!content.contains("不支持") && !content.contains("升级至"));
+        assert_eq!(appmsg_url_for_message(49, xml), None);
+    }
+
+    #[test]
+    fn placeholder_marker_matches_english_and_recent_wording() {
+        for title in [
+            "Your current WeChat version does not support this content.",
+            "当前微信版本不支持展示该内容，请升级至最新版本。",
+            "暂不支持查看",
+        ] {
+            assert!(is_appmsg_placeholder(title), "missed: {title}");
+        }
+        assert!(!is_appmsg_placeholder("2分钟，你将沉浸式体验5个心理学实验。"));
     }
 
     #[test]
