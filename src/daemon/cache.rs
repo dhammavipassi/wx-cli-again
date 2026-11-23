@@ -586,6 +586,13 @@ impl DbCache {
         let wal_path3 = wal_path.clone();
         let key_copy = enc_key_bytes;
         tokio::task::spawn_blocking(move || {
+            std::fs::File::open(&db_path2).map_err(|err| {
+                anyhow::anyhow!(
+                    "无法读取源库 {}: {}（检查文件权限与微信授权）",
+                    db_path2.display(),
+                    err
+                )
+            })?;
             if !crypto::validate_raw_key_for_db(&db_path2, &key_copy) {
                 anyhow::bail!(
                     "密钥无法通过源库 HMAC/页头校验: {}（请 {} 或 wx key set）",
